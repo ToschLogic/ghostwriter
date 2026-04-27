@@ -1,4 +1,5 @@
 import time
+import signal
 import board
 import busio
 from digitalio import DigitalInOut
@@ -9,6 +10,14 @@ from stepper import A4988Stepper
 STEP_PIN = 18
 DIR_PIN = 23
 ENABLE_PIN = 24
+
+
+def _exit_cleanly(signum, frame):
+    """
+    Convert process signals into a normal Python exit so main()'s finally block
+    runs and the A4988 ENABLE pin is driven inactive before the program exits.
+    """
+    raise SystemExit(0)
 
 # def write_ndef_url(pn532, url: str, *, wipe_unused: bool = True) -> bool:
 #     """
@@ -130,7 +139,6 @@ ENABLE_PIN = 24
 
 #     return True
 
-import time
 
 
 def _ndef_uri_prefix_and_rest(url: str) -> tuple[int, bytes]:
@@ -269,6 +277,9 @@ def init_pn532():
 
 
 def main():
+    signal.signal(signal.SIGTERM, _exit_cleanly)
+    signal.signal(signal.SIGINT, _exit_cleanly)
+
     pn532 = init_pn532()
     stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
 
@@ -307,13 +318,15 @@ def main():
                 print("URL written successfully")
                 last_written_uid = uid_bytes
                 last_skip_log_time = time.monotonic()
+
+                # Advance to next tag
+                stepper.move(200, forward=True)
             else:
                 print("Write failed")
 
             # TODO: verify payload here
 
-            # Advance to next tag
-            stepper.move(200, forward=True)
+
 
             time.sleep(poll_delay_s)
 
