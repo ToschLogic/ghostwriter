@@ -272,27 +272,50 @@ def main():
     pn532 = init_pn532()
     #stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
 
+    url_to_write = "https://www.summitsmartfarms.com"
+    poll_delay_s = 0.1
+    same_tag_skip_delay_s = 2.0
+
+    last_written_uid = None
+    last_skip_log_time = 0.0
+
     try:
         while True:
             uid = pn532.read_passive_target(timeout=0.5)
-            if uid:
-                print("Tag UID:", uid.hex().upper())
+            if not uid:
+                time.sleep(poll_delay_s)
+                continue
 
-                print("writing to tag")
+            uid_bytes = bytes(uid)
+            uid_hex = uid_bytes.hex().upper()
 
-                ok = write_ndef_url(pn532, "https://www.summitsmartfarms.com", wipe_unused=False)
+            if uid_bytes == last_written_uid:
+                now = time.monotonic()
+                if now - last_skip_log_time >= same_tag_skip_delay_s:
+                    print(f"Tag UID: {uid_hex} already written; waiting for a different tag")
+                    last_skip_log_time = now
+                time.sleep(same_tag_skip_delay_s)
+                continue
 
-                if ok:
-                    print("URL written successfully")
-                else:
-                    print("Write failed")
-                # TODO: write tag here
-                # TODO: verify payload here
+            print("Tag UID:", uid_hex)
 
-                # Advance to next tag
-                #stepper.move(200, forward=True)
+            print("writing to tag")
 
-            time.sleep(0.1)
+            ok = write_ndef_url(pn532, url_to_write, wipe_unused=False)
+
+            if ok:
+                print("URL written successfully")
+                last_written_uid = uid_bytes
+                last_skip_log_time = time.monotonic()
+            else:
+                print("Write failed")
+            # TODO: write tag here
+            # TODO: verify payload here
+
+            # Advance to next tag
+            #stepper.move(200, forward=True)
+
+            time.sleep(poll_delay_s)
 
     finally:
         pass
