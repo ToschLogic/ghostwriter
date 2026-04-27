@@ -4,11 +4,11 @@ import busio
 from digitalio import DigitalInOut
 from adafruit_pn532.spi import PN532_SPI
 
-#from stepper import A4988Stepper
+from stepper import A4988Stepper
 
-#STEP_PIN = 18
-#DIR_PIN = 23
-#ENABLE_PIN = 24
+STEP_PIN = 18
+DIR_PIN = 23
+ENABLE_PIN = 24
 
 # def write_ndef_url(pn532, url: str, *, wipe_unused: bool = True) -> bool:
 #     """
@@ -270,7 +270,7 @@ def init_pn532():
 
 def main():
     pn532 = init_pn532()
-    #stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
+    stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
 
     url_to_write = "https://www.summitsmartfarms.com"
     poll_delay_s = 0.1
@@ -309,17 +309,16 @@ def main():
                 last_skip_log_time = time.monotonic()
             else:
                 print("Write failed")
-            # TODO: write tag here
+
             # TODO: verify payload here
 
             # Advance to next tag
-            #stepper.move(200, forward=True)
+            stepper.move(200, forward=True)
 
             time.sleep(poll_delay_s)
 
     finally:
-        pass
-        #stepper.cleanup()
+        stepper.cleanup()
 
 
 if __name__ == "__main__":
