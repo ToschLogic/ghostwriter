@@ -13,12 +13,16 @@ class A4988Stepper:
         step_pin,
         dir_pin,
         enable_pin=None,
-        pulse_us=500,
-        gap_us=500,
+        pulse_us=1000,
+        gap_us=1000,
         *,
         auto_disable=True,
         cleanup_release_enable=False,
         enable_delay_s=0.002,
+        dir_setup_s=0.001,
+        start_gap_us=5000,
+        ramp_steps=50,
+        settle_after_move_s=0.05,
     ):
         self.step_pin = step_pin
         self.dir_pin = dir_pin
@@ -28,6 +32,10 @@ class A4988Stepper:
         self.auto_disable = auto_disable
         self.cleanup_release_enable = cleanup_release_enable
         self.enable_delay_s = enable_delay_s
+        self.dir_setup_s = dir_setup_s
+        self.start_gap_s = start_gap_us / 1_000_000.0
+        self.ramp_steps = int(ramp_steps)
+        self.settle_after_move_s = settle_after_move_s
         self._cleaned_up = False
 
         GPIO.setmode(GPIO.BCM)
@@ -59,19 +67,37 @@ class A4988Stepper:
         # already-high STEP line can be interpreted as an unintended pulse.
         GPIO.output(self.step_pin, GPIO.LOW)
         GPIO.output(self.dir_pin, DIR_FORWARD if forward else DIR_REVERSE)
-        time.sleep(0.00001)
+        time.sleep(self.dir_setup_s)
 
         try:
             self.enable()
             for _ in range(steps):
+                gap_s = self._gap_for_step(_)
                 GPIO.output(self.step_pin, GPIO.HIGH)
                 time.sleep(self.pulse_s)
                 GPIO.output(self.step_pin, GPIO.LOW)
-                time.sleep(self.gap_s)
+                time.sleep(gap_s)
         finally:
             GPIO.output(self.step_pin, GPIO.LOW)
+            time.sleep(self.settle_after_move_s)
             if self.auto_disable:
                 self.disable()
+
+    def _gap_for_step(self, step_index):
+        """
+        Start each move slowly, then ramp to the requested speed.
+
+        A stepper often buzzes instead of rotating when commanded to start at a
+        speed that is fine once already moving but too fast from rest. This is
+        especially common with Python GPIO timing, marginal current limiting,
+        heavier loads, or microstepping.
+        """
+        if self.ramp_steps <= 0 or self.start_gap_s <= self.gap_s:
+            return self.gap_s
+
+        ramp_index = min(step_index, self.ramp_steps)
+        progress = ramp_index / self.ramp_steps
+        return self.start_gap_s - ((self.start_gap_s - self.gap_s) * progress)
 
     def cleanup(self):
         if self._cleaned_up:
