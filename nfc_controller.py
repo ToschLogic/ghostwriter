@@ -283,15 +283,18 @@ def main():
     pn532 = init_pn532()
     stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
 
-    url_to_write = "https://www.summitsmartfarms.com"
+    url_prefix = "https://www.summitsmartfarms.com/test-"
+    max_tags_to_write = 5
+    step_count_per_tag = 30
     poll_delay_s = 0.1
     same_tag_skip_delay_s = 2.0
 
     last_written_uid = None
     last_skip_log_time = 0.0
+    successful_writes = 0
 
     try:
-        while True:
+        while successful_writes < max_tags_to_write:
             uid = pn532.read_passive_target(timeout=0.5)
             if not uid:
                 time.sleep(poll_delay_s)
@@ -310,6 +313,9 @@ def main():
 
             print("Tag UID:", uid_hex)
 
+            url_to_write = f"{url_prefix}{successful_writes + 1}"
+            print(f"writing URL to tag: {url_to_write}")
+
             print("writing to tag")
 
             ok = write_ndef_url(pn532, url_to_write, wipe_unused=False)
@@ -318,9 +324,12 @@ def main():
                 print("URL written successfully")
                 last_written_uid = uid_bytes
                 last_skip_log_time = time.monotonic()
+                successful_writes += 1
+                print(f"Completed {successful_writes} of {max_tags_to_write} tag writes")
 
                 # Advance to next tag
-                stepper.move(200, forward=True)
+                if successful_writes < max_tags_to_write:
+                    stepper.move(step_count_per_tag, forward=True)
             else:
                 print("Write failed")
 
@@ -329,6 +338,8 @@ def main():
 
 
             time.sleep(poll_delay_s)
+
+        print(f"Finished writing {successful_writes} tags. Exiting.")
 
     finally:
         stepper.cleanup()
