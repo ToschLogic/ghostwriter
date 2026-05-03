@@ -145,7 +145,7 @@ export function Dashboard() {
           <span className={`pill ${statusTone(status?.state ?? "idle")}`}>
             {prettyState(status?.state ?? "idle")}
           </span>
-          <p>Updated {status?.updatedAt ?? "waiting for API"}</p>
+          <p>Updated {status ? status.updatedAt : "waiting for API"}</p>
         </div>
       </section>
 
@@ -214,7 +214,7 @@ export function Dashboard() {
           <form onSubmit={handleSubmit} className="tagForm">
             <div className="tagList">
               {tags.map((tag, index) => (
-                <div key={`${index}-${tag}`} className="tagRow">
+                <div key={index} className="tagRow">
                   <label>
                     <span>Tag {index + 1}</span>
                     <input
@@ -275,7 +275,7 @@ export function Dashboard() {
               </thead>
               <tbody>
                 {status.job.results.map((result) => (
-                  <TagResultRow key={`${result.index}-${result.url}`} result={result} />
+                  <TagResultRow key={result.index} result={result} />
                 ))}
               </tbody>
             </table>
