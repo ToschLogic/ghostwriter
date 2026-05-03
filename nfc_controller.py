@@ -289,7 +289,7 @@ def main():
 
     url_prefix = "https://www.summitsmartfarms.com/test-"
     max_tags_to_write = 10
-    step_count_per_tag = 75
+    step_count_per_tag = 64
     poll_delay_s = 0.1
     same_tag_skip_delay_s = 2.0
 
