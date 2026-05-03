@@ -35,11 +35,8 @@ export type MachineStatus = {
   job: CurrentJob | null;
 };
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_GHOSTWRITER_API_BASE_URL ?? "http://localhost:8000";
-
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(path, {
     ...init,
     headers: {
       "Content-Type": "application/json",
