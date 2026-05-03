@@ -1,15 +1,24 @@
-import time
 import signal
+import threading
+import time
+from dataclasses import asdict, dataclass, field
+from typing import Any
+from uuid import uuid4
+
 import board
 import busio
-from digitalio import DigitalInOut
 from adafruit_pn532.spi import PN532_SPI
+from digitalio import DigitalInOut
 
 from stepper import A4988Stepper
 
 STEP_PIN = 18
 DIR_PIN = 23
 ENABLE_PIN = 24
+
+DEFAULT_STEP_COUNT_PER_TAG = 64
+DEFAULT_POLL_DELAY_S = 0.1
+DEFAULT_SAME_TAG_SKIP_DELAY_S = 2.0
 
 
 def _format_uid(uid_bytes: bytes) -> str:
@@ -22,6 +31,10 @@ def _exit_cleanly(signum, frame):
     runs and the A4988 ENABLE pin is driven inactive before the program exits.
     """
     raise SystemExit(0)
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 # def write_ndef_url(pn532, url: str, *, wipe_unused: bool = True) -> bool:
 #     """
@@ -280,92 +293,269 @@ def init_pn532():
     return pn532
 
 
+@dataclass(slots=True)
+class TagWriteRequest:
+    url: str
+
+
+@dataclass(slots=True)
+class TagWriteResult:
+    index: int
+    url: str
+    status: str = "pending"
+    uid: str | None = None
+    message: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+@dataclass(slots=True)
+class WriterJob:
+    tags: list[TagWriteRequest]
+    job_id: str = field(default_factory=lambda: str(uuid4()))
+    state: str = "queued"
+    created_at: str = field(default_factory=_utc_now)
+    started_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
+    current_tag_index: int | None = None
+    current_uid: str | None = None
+    results: list[TagWriteResult] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.results:
+            self.results = [
+                TagWriteResult(index=index + 1, url=tag.url)
+                for index, tag in enumerate(self.tags)
+            ]
+
+
+class NFCWriterController:
+    def __init__(
+        self,
+        *,
+        step_count_per_tag: int = DEFAULT_STEP_COUNT_PER_TAG,
+        poll_delay_s: float = DEFAULT_POLL_DELAY_S,
+        same_tag_skip_delay_s: float = DEFAULT_SAME_TAG_SKIP_DELAY_S,
+    ):
+        self.step_count_per_tag = step_count_per_tag
+        self.poll_delay_s = poll_delay_s
+        self.same_tag_skip_delay_s = same_tag_skip_delay_s
+        self._lock = threading.RLock()
+        self._job_thread: threading.Thread | None = None
+        self._current_job: WriterJob | None = None
+        self._last_message = "idle"
+        self._last_error: str | None = None
+        self._last_uid: str | None = None
+        self._updated_at = _utc_now()
+
+    def submit_job(self, tags: list[TagWriteRequest]) -> WriterJob:
+        if not tags:
+            raise ValueError("at least one tag is required")
+
+        with self._lock:
+            if self._job_thread is not None and self._job_thread.is_alive():
+                raise RuntimeError("writer is already running a job")
+
+            job = WriterJob(tags=tags)
+            self._current_job = job
+            self._last_error = None
+            self._last_message = f"job {job.job_id} queued"
+            self._updated_at = _utc_now()
+            self._job_thread = threading.Thread(
+                target=self._run_job,
+                args=(job,),
+                daemon=True,
+                name=f"nfc-writer-{job.job_id}",
+            )
+            self._job_thread.start()
+            return job
+
+    def get_current_job_data(self) -> dict[str, Any] | None:
+        with self._lock:
+            if self._current_job is None:
+                return None
+            return self._serialize_job(self._current_job)
+
+    def get_status(self) -> dict[str, Any]:
+        with self._lock:
+            job = self._current_job
+            state = "idle"
+            total_tags = 0
+            completed_tags = 0
+            current_tag_number = None
+
+            if job is not None:
+                state = job.state
+                total_tags = len(job.tags)
+                completed_tags = sum(1 for result in job.results if result.status == "written")
+                current_tag_number = job.current_tag_index
+
+            return {
+                "state": state,
+                "jobId": job.job_id if job else None,
+                "totalTags": total_tags,
+                "completedTags": completed_tags,
+                "currentTagNumber": current_tag_number,
+                "lastUid": self._last_uid,
+                "lastMessage": self._last_message,
+                "lastError": self._last_error,
+                "updatedAt": self._updated_at,
+                "job": self.get_current_job_data(),
+            }
+
+    def _set_message(self, message: str, *, error: str | None = None):
+        with self._lock:
+            self._last_message = message
+            self._last_error = error
+            self._updated_at = _utc_now()
+
+    def _run_job(self, job: WriterJob):
+        pn532 = None
+        stepper = None
+        last_written_uid: bytes | None = None
+        written_uids: set[bytes] = set()
+        last_skip_log_time = 0.0
+
+        try:
+            with self._lock:
+                job.state = "running"
+                job.started_at = _utc_now()
+                self._updated_at = _utc_now()
+                self._last_message = f"job {job.job_id} started"
+
+            pn532 = init_pn532()
+            stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
+
+            for index, result in enumerate(job.results):
+                with self._lock:
+                    job.current_tag_index = result.index
+                    result.status = "waiting-for-tag"
+                    result.started_at = _utc_now()
+                    self._updated_at = _utc_now()
+                    self._last_message = f"waiting for tag {result.index} of {len(job.results)}"
+
+                while True:
+                    uid = pn532.read_passive_target(timeout=0.5)
+
+                    if not uid:
+                        time.sleep(self.poll_delay_s)
+                        continue
+
+                    uid_bytes = bytes(uid)
+                    uid_display = _format_uid(uid_bytes)
+
+                    if last_written_uid is not None and uid_bytes == last_written_uid:
+                        now = time.monotonic()
+                        if now - last_skip_log_time >= self.same_tag_skip_delay_s:
+                            self._set_message(f"Tag UID {uid_display} is still under the reader; waiting for the next tag")
+                            last_skip_log_time = now
+                        time.sleep(self.same_tag_skip_delay_s)
+                        continue
+
+                    if uid_bytes in written_uids:
+                        now = time.monotonic()
+                        if now - last_skip_log_time >= self.same_tag_skip_delay_s:
+                            self._set_message(f"Tag UID {uid_display} already written; remove it before continuing")
+                            last_skip_log_time = now
+                        time.sleep(self.same_tag_skip_delay_s)
+                        continue
+
+                    with self._lock:
+                        job.current_uid = uid_display
+                        self._last_uid = uid_display
+                        result.uid = uid_display
+                        result.status = "writing"
+                        result.message = f"writing URL to tag {result.index}"
+                        self._updated_at = _utc_now()
+                        self._last_message = f"writing tag {result.index}: {result.url}"
+
+                    ok = write_ndef_url(pn532, result.url, wipe_unused=False)
+
+                    if ok:
+                        last_written_uid = uid_bytes
+                        written_uids.add(uid_bytes)
+                        last_skip_log_time = time.monotonic()
+
+                        with self._lock:
+                            result.status = "written"
+                            result.message = "URL written successfully"
+                            result.completed_at = _utc_now()
+                            self._updated_at = _utc_now()
+                            self._last_message = f"completed tag {result.index} of {len(job.results)}"
+
+                        if index < len(job.results) - 1:
+                            stepper.move(self.step_count_per_tag, forward=True)
+                        break
+
+                    with self._lock:
+                        result.status = "error"
+                        result.message = "write failed"
+                        result.completed_at = _utc_now()
+                        job.state = "error"
+                        job.error = f"failed writing tag {result.index}"
+                        self._last_error = job.error
+                        self._last_message = job.error
+                        self._updated_at = _utc_now()
+                    return
+
+                time.sleep(self.poll_delay_s)
+
+            with self._lock:
+                job.state = "completed"
+                job.completed_at = _utc_now()
+                self._last_message = f"job {job.job_id} completed"
+                self._updated_at = _utc_now()
+
+        except Exception as exc:
+            with self._lock:
+                job.state = "error"
+                job.error = str(exc)
+                job.completed_at = _utc_now()
+                self._last_error = str(exc)
+                self._last_message = f"job {job.job_id} failed"
+                self._updated_at = _utc_now()
+        finally:
+            if stepper is not None:
+                stepper.cleanup()
+
+    @staticmethod
+    def _serialize_job(job: WriterJob) -> dict[str, Any]:
+        return {
+            "jobId": job.job_id,
+            "state": job.state,
+            "createdAt": job.created_at,
+            "startedAt": job.started_at,
+            "completedAt": job.completed_at,
+            "error": job.error,
+            "currentTagIndex": job.current_tag_index,
+            "currentUid": job.current_uid,
+            "results": [asdict(result) for result in job.results],
+        }
+
+
+def build_tag_requests(urls: list[str]) -> list[TagWriteRequest]:
+    cleaned = [url.strip() for url in urls if url and url.strip()]
+    if not cleaned:
+        raise ValueError("at least one non-empty URL is required")
+    return [TagWriteRequest(url=url) for url in cleaned]
+
+
 def main():
     signal.signal(signal.SIGTERM, _exit_cleanly)
     signal.signal(signal.SIGINT, _exit_cleanly)
+    controller = NFCWriterController()
+    urls = [f"https://www.summitsmartfarms.com/test-{index}" for index in range(1, 11)]
+    job = controller.submit_job(build_tag_requests(urls))
 
-    pn532 = init_pn532()
-    stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
-
-    url_prefix = "https://www.summitsmartfarms.com/test-"
-    max_tags_to_write = 10
-    step_count_per_tag = 64
-    poll_delay_s = 0.1
-    same_tag_skip_delay_s = 2.0
-
-    last_written_uid = None
-    last_skip_log_time = 0.0
-    successful_writes = 0
-    written_uids = set()
-
-    try:
-        session_started_at = time.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"Starting NFC write session at {session_started_at}")
-        print(
-            f"Configured to write {max_tags_to_write} tags, "
-            f"moving {step_count_per_tag} steps between successful writes"
-        )
-
-        while successful_writes < max_tags_to_write:
-            uid = pn532.read_passive_target(timeout=0.5)
-
-            if not uid:
-                time.sleep(poll_delay_s)
-                continue
-
-            uid_bytes = bytes(uid)
-            uid_hex = uid_bytes.hex().upper()
-            uid_display = _format_uid(uid_bytes)
-
-            if last_written_uid is not None and uid_bytes == last_written_uid:
-                now = time.monotonic()
-                if now - last_skip_log_time >= same_tag_skip_delay_s:
-                    print(f"Tag UID: {uid_display} is still under the reader; waiting for the next tag")
-                    last_skip_log_time = now
-                time.sleep(same_tag_skip_delay_s)
-                continue
-
-            if uid_bytes in written_uids:
-                now = time.monotonic()
-                if now - last_skip_log_time >= same_tag_skip_delay_s:
-                    print(f"Tag UID: {uid_display} already written; remove it before continuing")
-                    last_skip_log_time = now
-                time.sleep(same_tag_skip_delay_s)
-                continue
-
-            print(f"Tag UID: {uid_display} ({uid_hex})")
-
-            url_to_write = f"{url_prefix}{successful_writes + 1}"
-            print(f"writing URL to tag: {url_to_write}")
-
-            print("writing to tag")
-
-            ok = write_ndef_url(pn532, url_to_write, wipe_unused=False)
-
-            if ok:
-                print("URL written successfully")
-                last_written_uid = uid_bytes
-                written_uids.add(uid_bytes)
-                last_skip_log_time = time.monotonic()
-                successful_writes += 1
-                print(f"Completed {successful_writes} of {max_tags_to_write} tag writes")
-
-                # Advance to next tag
-                if successful_writes < max_tags_to_write:
-                    stepper.move(step_count_per_tag, forward=True)
-            else:
-                print("Write failed")
-
-            # TODO: verify payload here
-
-
-
-            time.sleep(poll_delay_s)
-
-        print(f"Finished writing {successful_writes} tags. Exiting.")
-
-    finally:
-        stepper.cleanup()
+    print(f"Starting NFC write session {job.job_id} with {len(urls)} tags")
+    while True:
+        status = controller.get_status()
+        print(status["lastMessage"])
+        if status["state"] in {"completed", "error"}:
+            print(status)
+            break
+        time.sleep(1)
 
 
 if __name__ == "__main__":
