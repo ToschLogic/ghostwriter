@@ -292,10 +292,12 @@ def main():
     last_written_uid = None
     last_skip_log_time = 0.0
     successful_writes = 0
+    written_uids = set()
 
     try:
         while successful_writes < max_tags_to_write:
             uid = pn532.read_passive_target(timeout=0.5)
+
             if not uid:
                 time.sleep(poll_delay_s)
                 continue
@@ -303,10 +305,18 @@ def main():
             uid_bytes = bytes(uid)
             uid_hex = uid_bytes.hex().upper()
 
-            if uid_bytes == last_written_uid:
+            if last_written_uid is not None and uid_bytes == last_written_uid:
                 now = time.monotonic()
                 if now - last_skip_log_time >= same_tag_skip_delay_s:
-                    print(f"Tag UID: {uid_hex} already written; waiting for a different tag")
+                    print(f"Tag UID: {uid_hex} is still under the reader; waiting for the next tag")
+                    last_skip_log_time = now
+                time.sleep(same_tag_skip_delay_s)
+                continue
+
+            if uid_bytes in written_uids:
+                now = time.monotonic()
+                if now - last_skip_log_time >= same_tag_skip_delay_s:
+                    print(f"Tag UID: {uid_hex} already written; remove it before continuing")
                     last_skip_log_time = now
                 time.sleep(same_tag_skip_delay_s)
                 continue
@@ -323,6 +333,7 @@ def main():
             if ok:
                 print("URL written successfully")
                 last_written_uid = uid_bytes
+                written_uids.add(uid_bytes)
                 last_skip_log_time = time.monotonic()
                 successful_writes += 1
                 print(f"Completed {successful_writes} of {max_tags_to_write} tag writes")
