@@ -12,6 +12,10 @@ DIR_PIN = 23
 ENABLE_PIN = 24
 
 
+def _format_uid(uid_bytes: bytes) -> str:
+    return "-".join(f"{byte:02X}" for byte in uid_bytes)
+
+
 def _exit_cleanly(signum, frame):
     """
     Convert process signals into a normal Python exit so main()'s finally block
@@ -284,7 +288,7 @@ def main():
     stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
 
     url_prefix = "https://www.summitsmartfarms.com/test-"
-    max_tags_to_write = 5
+    max_tags_to_write = 10
     step_count_per_tag = 75
     poll_delay_s = 0.1
     same_tag_skip_delay_s = 2.0
@@ -295,6 +299,13 @@ def main():
     written_uids = set()
 
     try:
+        session_started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Starting NFC write session at {session_started_at}")
+        print(
+            f"Configured to write {max_tags_to_write} tags, "
+            f"moving {step_count_per_tag} steps between successful writes"
+        )
+
         while successful_writes < max_tags_to_write:
             uid = pn532.read_passive_target(timeout=0.5)
 
@@ -304,11 +315,12 @@ def main():
 
             uid_bytes = bytes(uid)
             uid_hex = uid_bytes.hex().upper()
+            uid_display = _format_uid(uid_bytes)
 
             if last_written_uid is not None and uid_bytes == last_written_uid:
                 now = time.monotonic()
                 if now - last_skip_log_time >= same_tag_skip_delay_s:
-                    print(f"Tag UID: {uid_hex} is still under the reader; waiting for the next tag")
+                    print(f"Tag UID: {uid_display} is still under the reader; waiting for the next tag")
                     last_skip_log_time = now
                 time.sleep(same_tag_skip_delay_s)
                 continue
@@ -316,12 +328,12 @@ def main():
             if uid_bytes in written_uids:
                 now = time.monotonic()
                 if now - last_skip_log_time >= same_tag_skip_delay_s:
-                    print(f"Tag UID: {uid_hex} already written; remove it before continuing")
+                    print(f"Tag UID: {uid_display} already written; remove it before continuing")
                     last_skip_log_time = now
                 time.sleep(same_tag_skip_delay_s)
                 continue
 
-            print("Tag UID:", uid_hex)
+            print(f"Tag UID: {uid_display} ({uid_hex})")
 
             url_to_write = f"{url_prefix}{successful_writes + 1}"
             print(f"writing URL to tag: {url_to_write}")
