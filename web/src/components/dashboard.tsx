@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import { createJob, getMachineStatus, MachineStatus, TagResult } from "@/lib/api";
+import { createJob, getMachineStatus, MachineStatus, startPriming, stopPriming, TagResult } from "@/lib/api";
 
 const EMPTY_TAGS = ["https://", "https://"];
 
@@ -43,6 +43,7 @@ export function Dashboard() {
   const [status, setStatus] = useState<MachineStatus | null>(null);
   const [tags, setTags] = useState<string[]>(EMPTY_TAGS);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPriming, setIsPriming] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -91,6 +92,34 @@ export function Dashboard() {
 
   const updateTag = (index: number, value: string) => {
     setTags((current) => current.map((tag, currentIndex) => (currentIndex === index ? value : tag)));
+  };
+
+  const handleEnterPriming = async () => {
+    setIsPriming(true);
+    setApiError(null);
+    try {
+      await startPriming();
+      const nextStatus = await getMachineStatus();
+      setStatus(nextStatus);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "Failed to enter priming mode");
+    } finally {
+      setIsPriming(false);
+    }
+  };
+
+  const handleExitPriming = async () => {
+    setIsPriming(true);
+    setApiError(null);
+    try {
+      await stopPriming();
+      const nextStatus = await getMachineStatus();
+      setStatus(nextStatus);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "Failed to exit priming mode");
+    } finally {
+      setIsPriming(false);
+    }
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -149,6 +178,42 @@ export function Dashboard() {
         </div>
       </section>
 
+      {status?.state === "priming" && (
+        <section className="panel primingPanel">
+          <div className="panelHeader">
+            <h2>Priming mode</h2>
+            <p>Hold the first tag in the spool over the NFC reader to confirm alignment.</p>
+          </div>
+
+          {apiError ? <div className="alert error">{apiError}</div> : null}
+
+          <div className="primingIndicatorRow">
+            <div className={`primingIndicator ${status.primingTagPresent ? "tagPresent" : "tagAbsent"}`}>
+              <span className="primingDot" />
+              <span className="primingLabel">
+                {status.primingTagPresent ? "Tag detected" : "No tag in field"}
+              </span>
+            </div>
+            {status.primingUid && (
+              <span className="primingUid">UID: {status.primingUid}</span>
+            )}
+          </div>
+
+          <p className="primingMessage">{status.lastMessage}</p>
+
+          <div className="buttonRow">
+            <button
+              type="button"
+              className="secondaryButton"
+              onClick={handleExitPriming}
+              disabled={isPriming}
+            >
+              {isPriming ? "Exiting…" : "Exit priming mode"}
+            </button>
+          </div>
+        </section>
+      )}
+
       <section className="gridLayout">
         <article className="panel statusPanel">
           <div className="panelHeader">
@@ -203,6 +268,19 @@ export function Dashboard() {
               <dd>{status?.lastError ?? "—"}</dd>
             </div>
           </dl>
+
+          {status?.state === "idle" && (
+            <div className="buttonRow">
+              <button
+                type="button"
+                className="secondaryButton"
+                onClick={handleEnterPriming}
+                disabled={isPriming}
+              >
+                {isPriming ? "Entering…" : "Enter priming mode"}
+              </button>
+            </div>
+          )}
         </article>
 
         <article className="panel formPanel">
@@ -246,7 +324,7 @@ export function Dashboard() {
               <button
                 type="submit"
                 className="primaryButton"
-                disabled={isSubmitting || status?.state === "running" || status?.state === "queued"}
+                disabled={isSubmitting || status?.state === "running" || status?.state === "queued" || status?.state === "priming"}
               >
                 {isSubmitting ? "Submitting..." : "Start tag write job"}
               </button>

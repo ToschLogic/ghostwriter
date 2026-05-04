@@ -1,4 +1,4 @@
-export type MachineState = "idle" | "queued" | "running" | "completed" | "error";
+export type MachineState = "idle" | "queued" | "running" | "completed" | "error" | "priming";
 
 export type TagResult = {
   index: number;
@@ -33,6 +33,8 @@ export type MachineStatus = {
   lastError: string | null;
   updatedAt: string;
   job: CurrentJob | null;
+  primingTagPresent: boolean;
+  primingUid: string | null;
 };
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -56,6 +58,14 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getMachineStatus() {
   return apiFetch<MachineStatus>("/api/status");
+}
+
+export function startPriming() {
+  return apiFetch<{ state: MachineState }>("/api/priming/start", { method: "POST" });
+}
+
+export function stopPriming() {
+  return apiFetch<{ state: MachineState }>("/api/priming/stop", { method: "POST" });
 }
 
 export function createJob(urls: string[]) {
