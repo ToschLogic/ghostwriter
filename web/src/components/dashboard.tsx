@@ -55,12 +55,14 @@ function TagResultRow({ result }: { result: TagResult }) {
 }
 
 export function Dashboard() {
+  const nudgeSteps = [20, 30, 40, 50, 60];
   const [status, setStatus] = useState<MachineStatus | null>(null);
   const [settings, setSettings] = useState<MachineSettings | null>(null);
   const [tags, setTags] = useState<string[]>(EMPTY_TAGS);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [stepCountInput, setStepCountInput] = useState("64");
+  const [isEditingStepCount, setIsEditingStepCount] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [nudgingAction, setNudgingAction] = useState<string | null>(null);
   const [nudgeError, setNudgeError] = useState<string | null>(null);
@@ -85,7 +87,9 @@ export function Dashboard() {
         }
         setStatus(nextStatus);
         setSettings(nextSettings);
-        setStepCountInput(String(nextSettings.stepCountPerTag));
+        if (!isEditingStepCount) {
+          setStepCountInput(String(nextSettings.stepCountPerTag));
+        }
         setApiError(null);
         setSettingsError(null);
       } catch (error) {
@@ -103,7 +107,7 @@ export function Dashboard() {
       active = false;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [isEditingStepCount]);
 
   const progressPercent = useMemo(() => {
     if (!status || status.totalTags === 0) {
@@ -166,6 +170,7 @@ export function Dashboard() {
       const nextSettings = await updateSettings({ stepCountPerTag: parsed });
       setSettings(nextSettings);
       setStepCountInput(String(nextSettings.stepCountPerTag));
+      setIsEditingStepCount(false);
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : "Failed to save settings");
     } finally {
@@ -244,7 +249,7 @@ export function Dashboard() {
           <div className="nudgeGroup">
             <h3>Forward</h3>
             <div className="nudgeButtonRow">
-              {[15, 20, 25, 30].map((steps) => {
+              {nudgeSteps.map((steps) => {
                 const actionKey = `forward-${steps}`;
                 return (
                   <button
@@ -264,7 +269,7 @@ export function Dashboard() {
           <div className="nudgeGroup">
             <h3>Backward</h3>
             <div className="nudgeButtonRow">
-              {[15, 20, 25, 30].map((steps) => {
+              {nudgeSteps.map((steps) => {
                 const actionKey = `backward-${steps}`;
                 return (
                   <button
@@ -299,7 +304,15 @@ export function Dashboard() {
               min={1}
               step={1}
               value={stepCountInput}
-              onChange={(event) => setStepCountInput(event.target.value)}
+              onChange={(event) => {
+                setIsEditingStepCount(true);
+                setStepCountInput(event.target.value);
+              }}
+              onBlur={() => {
+                if (settings && stepCountInput === String(settings.stepCountPerTag)) {
+                  setIsEditingStepCount(false);
+                }
+              }}
               placeholder="64"
             />
           </label>
