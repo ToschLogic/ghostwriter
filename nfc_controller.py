@@ -353,34 +353,33 @@ class NFCWriterController:
         self._priming_thread: threading.Thread | None = None
         self._priming_tag_present = False
         self._priming_uid: str | None = None
+        # Cancellation flag
+        self._cancel_requested = False
+
+    def get_settings(self) -> dict[str, Any]:
+        with self._lock:
+            return {"stepCountPerTag": self.step_count_per_tag}
+
+    def update_settings(self, *, step_count_per_tag: int | None = None) -> dict[str, Any]:
+        with self._lock:
+            if step_count_per_tag is not None:
+                if step_count_per_tag < 1:
+                    raise ValueError("stepCountPerTag must be at least 1")
+                self.step_count_per_tag = step_count_per_tag
+            return self.get_settings()
 
     def start_priming(self) -> None:
-        with self._lock:
-            if self._job_thread is not None and self._job_thread.is_alive():
-                raise RuntimeError("cannot enter priming mode while a job is running")
-            if self._priming_active:
-                raise RuntimeError("priming mode is already active")
-            self._priming_active = True
-            self._priming_tag_present = False
-            self._priming_uid = None
-            self._last_message = "priming: waiting for first tag in field…"
-            self._last_error = None
-            self._updated_at = _utc_now()
-            self._priming_thread = threading.Thread(
-                target=self._run_priming,
-                daemon=True,
-                name="nfc-priming",
-            )
-            self._priming_thread.start()
+        raise RuntimeError("priming mode is temporarily disabled")
 
     def stop_priming(self) -> None:
+        raise RuntimeError("priming mode is temporarily disabled")
+
+    def cancel_job(self) -> None:
         with self._lock:
-            if not self._priming_active:
-                raise RuntimeError("priming mode is not active")
-            self._priming_active = False
-            self._last_message = "idle"
-            self._priming_tag_present = False
-            self._priming_uid = None
+            if self._current_job is None or self._current_job.state not in {"queued", "running"}:
+                raise RuntimeError("no active job to cancel")
+            self._cancel_requested = True
+            self._last_message = "cancellation requested…"
             self._updated_at = _utc_now()
 
     def submit_job(self, tags: list[TagWriteRequest]) -> WriterJob:
@@ -394,6 +393,7 @@ class NFCWriterController:
             job = WriterJob(tags=tags)
             self._current_job = job
             self._last_error = None
+            self._cancel_requested = False
             self._last_message = f"job {job.job_id} queued"
             self._updated_at = _utc_now()
             self._job_thread = threading.Thread(
@@ -421,7 +421,7 @@ class NFCWriterController:
 
             if self._priming_active:
                 state = "priming"
-            elif job is not None and job.state not in ("completed", "error"):
+            elif job is not None and job.state not in ("completed", "error", "cancelled"):
                 state = job.state
                 total_tags = len(job.tags)
                 completed_tags = sum(1 for result in job.results if result.status == "written")
@@ -513,6 +513,13 @@ class NFCWriterController:
 
             for index, result in enumerate(job.results):
                 with self._lock:
+                    if self._cancel_requested:
+                        job.state = "cancelled"
+                        job.completed_at = _utc_now()
+                        self._last_message = f"job {job.job_id} cancelled"
+                        self._updated_at = _utc_now()
+                        return
+
                     job.current_tag_index = result.index
                     result.status = "waiting-for-tag"
                     result.started_at = _utc_now()
@@ -520,6 +527,15 @@ class NFCWriterController:
                     self._last_message = f"waiting for tag {result.index} of {len(job.results)}"
 
                 while True:
+                    with self._lock:
+                        if self._cancel_requested:
+                            job.state = "cancelled"
+                            job.completed_at = _utc_now()
+                            result.status = "cancelled"
+                            self._last_message = f"job {job.job_id} cancelled"
+                            self._updated_at = _utc_now()
+                            return
+
                     uid = pn532.read_passive_target(timeout=0.5)
 
                     if not uid:

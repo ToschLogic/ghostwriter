@@ -2,7 +2,19 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import { createJob, getMachineStatus, MachineStatus, startPriming, stopPriming, TagResult } from "@/lib/api";
+import {
+  cancelJob,
+  createJob,
+  getSettings,
+  getMachineStatus,
+  MachineSettings,
+  MachineStatus,
+  nudgeStepper,
+  startPriming,
+  stopPriming,
+  TagResult,
+  updateSettings,
+} from "@/lib/api";
 
 const EMPTY_TAGS = ["https://", "https://"];
 
@@ -20,6 +32,8 @@ function statusTone(state: string) {
       return "error";
     case "queued":
       return "queued";
+    case "cancelled":
+      return "cancelled";
     default:
       return "idle";
   }
@@ -41,23 +55,38 @@ function TagResultRow({ result }: { result: TagResult }) {
 
 export function Dashboard() {
   const [status, setStatus] = useState<MachineStatus | null>(null);
+  const [settings, setSettings] = useState<MachineSettings | null>(null);
   const [tags, setTags] = useState<string[]>(EMPTY_TAGS);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isPriming, setIsPriming] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [stepCountInput, setStepCountInput] = useState("64");
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [nudgingSteps, setNudgingSteps] = useState<number | null>(null);
+  const [nudgeError, setNudgeError] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+
+  // Unused priming handlers kept for reference when feature is re-enabled
+  const _startPriming = startPriming;
+  const _stopPriming = stopPriming;
+  void _startPriming;
+  void _stopPriming;
 
   useEffect(() => {
     let active = true;
 
     const loadStatus = async () => {
       try {
-        const nextStatus = await getMachineStatus();
+        const [nextStatus, nextSettings] = await Promise.all([getMachineStatus(), getSettings()]);
         if (!active) {
           return;
         }
         setStatus(nextStatus);
+        setSettings(nextSettings);
+        setStepCountInput(String(nextSettings.stepCountPerTag));
         setApiError(null);
+        setSettingsError(null);
       } catch (error) {
         if (!active) {
           return;
@@ -94,31 +123,51 @@ export function Dashboard() {
     setTags((current) => current.map((tag, currentIndex) => (currentIndex === index ? value : tag)));
   };
 
-  const handleEnterPriming = async () => {
-    setIsPriming(true);
-    setApiError(null);
+  const handleNudge = async (steps: number) => {
+    setNudgingSteps(steps);
+    setNudgeError(null);
     try {
-      await startPriming();
-      const nextStatus = await getMachineStatus();
-      setStatus(nextStatus);
+      await nudgeStepper(steps);
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Failed to enter priming mode");
+      setNudgeError(error instanceof Error ? error.message : "Nudge failed");
     } finally {
-      setIsPriming(false);
+      setNudgingSteps(null);
     }
   };
 
-  const handleExitPriming = async () => {
-    setIsPriming(true);
+  const handleCancel = async () => {
+    setIsCancelling(true);
     setApiError(null);
     try {
-      await stopPriming();
+      await cancelJob();
       const nextStatus = await getMachineStatus();
       setStatus(nextStatus);
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : "Failed to exit priming mode");
+      setApiError(error instanceof Error ? error.message : "Failed to cancel job");
     } finally {
-      setIsPriming(false);
+      setIsCancelling(false);
+    }
+  };
+
+  const handleSaveSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSettingsError(null);
+
+    const parsed = Number(stepCountInput);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      setSettingsError("Step count per tag must be a whole number greater than 0.");
+      return;
+    }
+
+    setIsSavingSettings(true);
+    try {
+      const nextSettings = await updateSettings({ stepCountPerTag: parsed });
+      setSettings(nextSettings);
+      setStepCountInput(String(nextSettings.stepCountPerTag));
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : "Failed to save settings");
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -159,6 +208,8 @@ export function Dashboard() {
     }
   };
 
+  const isJobActive = status?.state === "running" || status?.state === "queued";
+
   return (
     <main className="pageShell">
       <section className="heroCard">
@@ -178,41 +229,59 @@ export function Dashboard() {
         </div>
       </section>
 
-      {status?.state === "priming" && (
-        <section className="panel primingPanel">
-          <div className="panelHeader">
-            <h2>Priming mode</h2>
-            <p>Hold the first tag in the spool over the NFC reader to confirm alignment.</p>
-          </div>
+      {/* Stepper nudge panel — always visible */}
+      <section className="panel nudgePanel">
+        <div className="panelHeader">
+          <h2>Manual stepper nudge</h2>
+          <p>Advance the spool by a fixed number of steps at any time.</p>
+        </div>
 
-          {apiError ? <div className="alert error">{apiError}</div> : null}
+        {nudgeError ? <div className="alert error">{nudgeError}</div> : null}
 
-          <div className="primingIndicatorRow">
-            <div className={`primingIndicator ${status.primingTagPresent ? "tagPresent" : "tagAbsent"}`}>
-              <span className="primingDot" />
-              <span className="primingLabel">
-                {status.primingTagPresent ? "Tag detected" : "No tag in field"}
-              </span>
-            </div>
-            {status.primingUid && (
-              <span className="primingUid">UID: {status.primingUid}</span>
-            )}
-          </div>
-
-          <p className="primingMessage">{status.lastMessage}</p>
-
-          <div className="buttonRow">
+        <div className="nudgeButtonRow">
+          {[5, 10, 15].map((steps) => (
             <button
+              key={steps}
               type="button"
-              className="secondaryButton"
-              onClick={handleExitPriming}
-              disabled={isPriming}
+              className="nudgeButton"
+              onClick={() => handleNudge(steps)}
+              disabled={nudgingSteps !== null}
             >
-              {isPriming ? "Exiting…" : "Exit priming mode"}
+              {nudgingSteps === steps ? "Moving…" : `+${steps} steps`}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel settingsPanel">
+        <div className="panelHeader">
+          <h2>Stepper settings</h2>
+          <p>Adjust the default number of forward steps used between written tags.</p>
+        </div>
+
+        {settingsError ? <div className="alert error">{settingsError}</div> : null}
+
+        <form onSubmit={handleSaveSettings} className="settingsForm">
+          <label className="settingsField">
+            <span>Default steps per tag</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={stepCountInput}
+              onChange={(event) => setStepCountInput(event.target.value)}
+              placeholder="64"
+            />
+          </label>
+
+          <div className="settingsMeta">
+            <span>Current value: {settings?.stepCountPerTag ?? "—"}</span>
+            <button type="submit" className="secondaryButton" disabled={isSavingSettings}>
+              {isSavingSettings ? "Saving…" : "Save setting"}
             </button>
           </div>
-        </section>
-      )}
+        </form>
+      </section>
 
       <section className="gridLayout">
         <article className="panel statusPanel">
@@ -269,15 +338,15 @@ export function Dashboard() {
             </div>
           </dl>
 
-          {status?.state === "idle" && (
-            <div className="buttonRow">
+          {isJobActive && (
+            <div className="buttonRow" style={{ marginTop: "16px" }}>
               <button
                 type="button"
-                className="secondaryButton"
-                onClick={handleEnterPriming}
-                disabled={isPriming}
+                className="cancelButton"
+                onClick={handleCancel}
+                disabled={isCancelling}
               >
-                {isPriming ? "Entering…" : "Enter priming mode"}
+                {isCancelling ? "Cancelling…" : "Cancel job"}
               </button>
             </div>
           )}
@@ -324,7 +393,7 @@ export function Dashboard() {
               <button
                 type="submit"
                 className="primaryButton"
-                disabled={isSubmitting || status?.state === "running" || status?.state === "queued" || status?.state === "priming"}
+                disabled={isSubmitting || isJobActive}
               >
                 {isSubmitting ? "Submitting..." : "Start tag write job"}
               </button>

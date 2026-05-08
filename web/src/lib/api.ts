@@ -1,4 +1,8 @@
-export type MachineState = "idle" | "queued" | "running" | "completed" | "error" | "priming";
+export type MachineState = "idle" | "queued" | "running" | "completed" | "error" | "cancelled" | "priming";
+
+export type MachineSettings = {
+  stepCountPerTag: number;
+};
 
 export type TagResult = {
   index: number;
@@ -66,6 +70,28 @@ export function startPriming() {
 
 export function stopPriming() {
   return apiFetch<{ state: MachineState }>("/api/priming/stop", { method: "POST" });
+}
+
+export function getSettings() {
+  return apiFetch<MachineSettings>("/api/settings");
+}
+
+export function updateSettings(settings: Partial<MachineSettings>) {
+  return apiFetch<MachineSettings>("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify(settings),
+  });
+}
+
+export function nudgeStepper(steps: number) {
+  return apiFetch<{ moved: number }>("/api/stepper/nudge", {
+    method: "POST",
+    body: JSON.stringify({ steps }),
+  });
+}
+
+export function cancelJob() {
+  return apiFetch<{ cancelled: boolean }>("/api/jobs/cancel", { method: "POST" });
 }
 
 export function createJob(urls: string[]) {

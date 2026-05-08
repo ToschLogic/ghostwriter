@@ -5,12 +5,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, HttpUrl
 
 from nfc_controller import NFCWriterController, TagWriteRequest
+from stepper import A4988Stepper
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+STEP_PIN = 18
+DIR_PIN = 23
+ENABLE_PIN = 24
 
 
 class TagPayload(BaseModel):
@@ -19,6 +24,14 @@ class TagPayload(BaseModel):
 
 class JobCreatePayload(BaseModel):
     tags: list[TagPayload] = Field(min_length=1)
+
+
+class NudgePayload(BaseModel):
+    steps: int = Field(gt=0, le=100)
+
+
+class SettingsUpdatePayload(BaseModel):
+    stepCountPerTag: int | None = Field(default=None, gt=0)
 
 
 controller = NFCWriterController()
@@ -70,6 +83,48 @@ def stop_priming():
         logger.error(f"RuntimeError stopping priming: {exc}")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"state": "idle"}
+
+
+@app.get("/api/settings")
+def get_settings():
+    logger.info("GET /api/settings - Fetching settings")
+    return controller.get_settings()
+
+
+@app.patch("/api/settings")
+def update_settings(payload: SettingsUpdatePayload):
+    logger.info(f"PATCH /api/settings - {payload.model_dump(exclude_none=True)}")
+    try:
+        settings = controller.update_settings(
+            step_count_per_tag=payload.stepCountPerTag,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return settings
+
+
+@app.post("/api/stepper/nudge")
+def nudge_stepper(payload: NudgePayload):
+    logger.info(f"POST /api/stepper/nudge - Moving {payload.steps} steps forward")
+    try:
+        stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
+        stepper.move(payload.steps, forward=True)
+        stepper.cleanup()
+    except Exception as exc:
+        logger.error(f"Stepper nudge error: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"moved": payload.steps}
+
+
+@app.post("/api/jobs/cancel")
+def cancel_job():
+    logger.info("POST /api/jobs/cancel - Cancelling current job")
+    try:
+        controller.cancel_job()
+    except RuntimeError as exc:
+        logger.error(f"RuntimeError cancelling job: {exc}")
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"cancelled": True}
 
 
 @app.post("/api/jobs")
