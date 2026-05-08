@@ -27,7 +27,8 @@ class JobCreatePayload(BaseModel):
 
 
 class NudgePayload(BaseModel):
-    steps: int = Field(gt=0, le=100)
+    steps: int
+    direction: str
 
 
 class SettingsUpdatePayload(BaseModel):
@@ -105,15 +106,20 @@ def update_settings(payload: SettingsUpdatePayload):
 
 @app.post("/api/stepper/nudge")
 def nudge_stepper(payload: NudgePayload):
-    logger.info(f"POST /api/stepper/nudge - Moving {payload.steps} steps forward")
+    if payload.steps not in {15, 20, 25, 30}:
+        raise HTTPException(status_code=400, detail="steps must be one of 15, 20, 25, or 30")
+    if payload.direction not in {"forward", "backward"}:
+        raise HTTPException(status_code=400, detail='direction must be "forward" or "backward"')
+
+    logger.info(f"POST /api/stepper/nudge - Moving {payload.steps} steps {payload.direction}")
     try:
         stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
-        stepper.move(payload.steps, forward=True)
+        stepper.move(payload.steps, forward=payload.direction == "forward")
         stepper.cleanup()
     except Exception as exc:
         logger.error(f"Stepper nudge error: {exc}")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"moved": payload.steps}
+    return {"moved": payload.steps, "direction": payload.direction}
 
 
 @app.post("/api/jobs/cancel")

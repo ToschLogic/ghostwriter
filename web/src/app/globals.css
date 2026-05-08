@@ -376,6 +376,25 @@ th {
   flex-wrap: wrap;
 }
 
+.nudgeControlGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.nudgeGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nudgeGroup h3 {
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
 .nudgeButton {
   border: none;
   border-radius: 999px;
@@ -392,6 +411,16 @@ th {
 .nudgeButton:hover {
   background: rgba(103, 232, 249, 0.24);
   transform: translateY(-1px);
+}
+
+.nudgeButtonReverse {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.nudgeButtonReverse:hover {
+  background: rgba(245, 158, 11, 0.24);
 }
 
 .nudgeButton:disabled {
@@ -572,5 +601,9 @@ th {
   .settingsForm,
   .settingsMeta {
     align-items: stretch;
+  }
+
+  .nudgeControlGrid {
+    grid-template-columns: 1fr;
   }
 }

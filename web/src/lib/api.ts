@@ -4,6 +4,8 @@ export type MachineSettings = {
   stepCountPerTag: number;
 };
 
+export type NudgeDirection = "forward" | "backward";
+
 export type TagResult = {
   index: number;
   url: string;
@@ -83,10 +85,10 @@ export function updateSettings(settings: Partial<MachineSettings>) {
   });
 }
 
-export function nudgeStepper(steps: number) {
-  return apiFetch<{ moved: number }>("/api/stepper/nudge", {
+export function nudgeStepper(steps: number, direction: NudgeDirection) {
+  return apiFetch<{ moved: number; direction: NudgeDirection }>("/api/stepper/nudge", {
     method: "POST",
-    body: JSON.stringify({ steps }),
+    body: JSON.stringify({ steps, direction }),
   });
 }
 

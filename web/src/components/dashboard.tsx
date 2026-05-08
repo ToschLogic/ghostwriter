@@ -9,6 +9,7 @@ import {
   getMachineStatus,
   MachineSettings,
   MachineStatus,
+  NudgeDirection,
   nudgeStepper,
   startPriming,
   stopPriming,
@@ -61,7 +62,7 @@ export function Dashboard() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [stepCountInput, setStepCountInput] = useState("64");
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [nudgingSteps, setNudgingSteps] = useState<number | null>(null);
+  const [nudgingAction, setNudgingAction] = useState<string | null>(null);
   const [nudgeError, setNudgeError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -123,15 +124,16 @@ export function Dashboard() {
     setTags((current) => current.map((tag, currentIndex) => (currentIndex === index ? value : tag)));
   };
 
-  const handleNudge = async (steps: number) => {
-    setNudgingSteps(steps);
+  const handleNudge = async (steps: number, direction: NudgeDirection) => {
+    const actionKey = `${direction}-${steps}`;
+    setNudgingAction(actionKey);
     setNudgeError(null);
     try {
-      await nudgeStepper(steps);
+      await nudgeStepper(steps, direction);
     } catch (error) {
       setNudgeError(error instanceof Error ? error.message : "Nudge failed");
     } finally {
-      setNudgingSteps(null);
+      setNudgingAction(null);
     }
   };
 
@@ -238,18 +240,46 @@ export function Dashboard() {
 
         {nudgeError ? <div className="alert error">{nudgeError}</div> : null}
 
-        <div className="nudgeButtonRow">
-          {[5, 10, 15].map((steps) => (
-            <button
-              key={steps}
-              type="button"
-              className="nudgeButton"
-              onClick={() => handleNudge(steps)}
-              disabled={nudgingSteps !== null}
-            >
-              {nudgingSteps === steps ? "Moving…" : `+${steps} steps`}
-            </button>
-          ))}
+        <div className="nudgeControlGrid">
+          <div className="nudgeGroup">
+            <h3>Forward</h3>
+            <div className="nudgeButtonRow">
+              {[15, 20, 25, 30].map((steps) => {
+                const actionKey = `forward-${steps}`;
+                return (
+                  <button
+                    key={actionKey}
+                    type="button"
+                    className="nudgeButton"
+                    onClick={() => handleNudge(steps, "forward")}
+                    disabled={nudgingAction !== null}
+                  >
+                    {nudgingAction === actionKey ? "Moving…" : `+${steps} steps`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="nudgeGroup">
+            <h3>Backward</h3>
+            <div className="nudgeButtonRow">
+              {[15, 20, 25, 30].map((steps) => {
+                const actionKey = `backward-${steps}`;
+                return (
+                  <button
+                    key={actionKey}
+                    type="button"
+                    className="nudgeButton nudgeButtonReverse"
+                    onClick={() => handleNudge(steps, "backward")}
+                    disabled={nudgingAction !== null}
+                  >
+                    {nudgingAction === actionKey ? "Moving…" : `-${steps} steps`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </section>
 
