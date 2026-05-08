@@ -98,6 +98,14 @@ cd web
 npm run dev
 ```
 
+> Note: on Linux ARM machines, Next.js 16 dev mode must run with Webpack because
+> Turbopack native bindings are not available there. The repo's `npm run dev`
+> script is already configured for this.
+>
+> If you access the dev server through a custom hostname such as
+> `ghostwriter.local`, that hostname must also be allowed in `web/next.config.ts`
+> via `allowedDevOrigins`.
+
 Open:
 
 ```text
@@ -130,6 +138,79 @@ python nfc_controller.py
 ```
 
 That path now uses the refactored controller internally.
+
+## Production setup (auto-start on Pi boot)
+
+This produces a pre-compiled Next.js bundle served by `next start` and two
+systemd services that bring everything up automatically when the Pi powers on.
+
+### 1) Build the Next.js app
+
+Run this once (and again after any UI code changes):
+
+```bash
+cd web
+npm run build
+```
+
+The compiled output lands in `web/.next/`.
+
+> **Important:** `web/.env.local` is read **at build time**, not at runtime.
+> Make sure it contains the correct `NEXT_PUBLIC_GHOSTWRITER_API_BASE_URL`
+> before running `npm run build`.
+
+### 2) Verify the production server works manually (optional)
+
+```bash
+# Terminal 1
+uvicorn api_server:app --host 0.0.0.0 --port 8000
+
+# Terminal 2
+cd web
+npm start
+```
+
+Browse to `http://ghostwriter.local:3000` and confirm everything works before
+wiring up auto-start.
+
+### 3) Install the systemd services
+
+The repo ships ready-made service files in `deploy/`. Copy them to systemd and
+enable them:
+
+```bash
+sudo cp deploy/ghostwriter-api.service /etc/systemd/system/
+sudo cp deploy/ghostwriter-web.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ghostwriter-api.service ghostwriter-web.service
+sudo systemctl start  ghostwriter-api.service ghostwriter-web.service
+```
+
+Both services use `User=pi` and expect the repo at `/home/pi/ghostwriter`.
+Edit the service files before copying if your username or path differs.
+
+### 4) Check status and logs
+
+```bash
+sudo systemctl status ghostwriter-api
+sudo systemctl status ghostwriter-web
+
+# Live logs
+journalctl -u ghostwriter-api -f
+journalctl -u ghostwriter-web -f
+```
+
+### 5) Updating the UI after code changes
+
+```bash
+cd /home/pi/ghostwriter/web
+npm run build
+sudo systemctl restart ghostwriter-web.service
+```
+
+The Python API does not need a rebuild — just `sudo systemctl restart ghostwriter-api.service` if you edit `api_server.py` or `nfc_controller.py`.
+
+---
 
 ## Verification performed
 

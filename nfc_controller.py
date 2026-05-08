@@ -348,6 +348,40 @@ class NFCWriterController:
         self._last_error: str | None = None
         self._last_uid: str | None = None
         self._updated_at = _utc_now()
+        # Priming mode state
+        self._priming_active = False
+        self._priming_thread: threading.Thread | None = None
+        self._priming_tag_present = False
+        self._priming_uid: str | None = None
+
+    def start_priming(self) -> None:
+        with self._lock:
+            if self._job_thread is not None and self._job_thread.is_alive():
+                raise RuntimeError("cannot enter priming mode while a job is running")
+            if self._priming_active:
+                raise RuntimeError("priming mode is already active")
+            self._priming_active = True
+            self._priming_tag_present = False
+            self._priming_uid = None
+            self._last_message = "priming: waiting for first tag in field…"
+            self._last_error = None
+            self._updated_at = _utc_now()
+            self._priming_thread = threading.Thread(
+                target=self._run_priming,
+                daemon=True,
+                name="nfc-priming",
+            )
+            self._priming_thread.start()
+
+    def stop_priming(self) -> None:
+        with self._lock:
+            if not self._priming_active:
+                raise RuntimeError("priming mode is not active")
+            self._priming_active = False
+            self._last_message = "idle"
+            self._priming_tag_present = False
+            self._priming_uid = None
+            self._updated_at = _utc_now()
 
     def submit_job(self, tags: list[TagWriteRequest]) -> WriterJob:
         if not tags:
@@ -385,7 +419,9 @@ class NFCWriterController:
             completed_tags = 0
             current_tag_number = None
 
-            if job is not None:
+            if self._priming_active:
+                state = "priming"
+            elif job is not None:
                 state = job.state
                 total_tags = len(job.tags)
                 completed_tags = sum(1 for result in job.results if result.status == "written")
@@ -402,7 +438,55 @@ class NFCWriterController:
                 "lastError": self._last_error,
                 "updatedAt": self._updated_at,
                 "job": self.get_current_job_data(),
+                "primingTagPresent": self._priming_tag_present,
+                "primingUid": self._priming_uid,
             }
+
+    def _run_priming(self):
+        pn532 = None
+        tag_was_present = False
+
+        try:
+            pn532 = init_pn532()
+
+            while True:
+                with self._lock:
+                    if not self._priming_active:
+                        break
+
+                uid = pn532.read_passive_target(timeout=0.5)
+
+                with self._lock:
+                    if not self._priming_active:
+                        break
+
+                    if uid:
+                        uid_bytes = bytes(uid)
+                        uid_display = _format_uid(uid_bytes)
+                        self._priming_tag_present = True
+                        self._priming_uid = uid_display
+                        self._last_uid = uid_display
+                        if not tag_was_present:
+                            self._last_message = f"priming: tag detected — {uid_display}"
+                            self._updated_at = _utc_now()
+                        tag_was_present = True
+                    else:
+                        if tag_was_present:
+                            self._priming_tag_present = False
+                            self._priming_uid = None
+                            self._last_message = "priming: tag lost — no tag in field"
+                            self._updated_at = _utc_now()
+                        tag_was_present = False
+
+                time.sleep(self.poll_delay_s)
+
+        except Exception as exc:
+            with self._lock:
+                self._last_error = str(exc)
+                self._last_message = f"priming error: {exc}"
+                self._priming_active = False
+                self._priming_tag_present = False
+                self._updated_at = _utc_now()
 
     def _set_message(self, message: str, *, error: str | None = None):
         with self._lock:

@@ -1,0 +1,18 @@
+[Unit]
+Description=Ghostwriter Next.js Dashboard
+After=network.target ghostwriter-api.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ghostwriter/web
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=3000
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
