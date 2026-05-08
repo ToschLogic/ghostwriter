@@ -421,7 +421,7 @@ class NFCWriterController:
 
             if self._priming_active:
                 state = "priming"
-            elif job is not None:
+            elif job is not None and job.state not in ("completed", "error"):
                 state = job.state
                 total_tags = len(job.tags)
                 completed_tags = sum(1 for result in job.results if result.status == "written")
