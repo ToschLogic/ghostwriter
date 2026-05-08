@@ -342,8 +342,10 @@ class NFCWriterController:
         self.poll_delay_s = poll_delay_s
         self.same_tag_skip_delay_s = same_tag_skip_delay_s
         self._lock = threading.RLock()
+        self._motion_lock = threading.Lock()
         self._job_thread: threading.Thread | None = None
         self._current_job: WriterJob | None = None
+        self._stepper: A4988Stepper | None = None
         self._last_message = "idle"
         self._last_error: str | None = None
         self._last_uid: str | None = None
@@ -367,6 +369,14 @@ class NFCWriterController:
                     raise ValueError("stepCountPerTag must be at least 1")
                 self.step_count_per_tag = step_count_per_tag
             return self.get_settings()
+
+    def nudge_stepper(self, steps: int, direction: str) -> None:
+        if steps <= 0:
+            raise ValueError("steps must be greater than 0")
+        if direction not in {"forward", "backward"}:
+            raise ValueError('direction must be "forward" or "backward"')
+
+        self._move_stepper(steps, forward=direction == "forward")
 
     def start_priming(self) -> None:
         raise RuntimeError("priming mode is temporarily disabled")
@@ -494,9 +504,18 @@ class NFCWriterController:
             self._last_error = error
             self._updated_at = _utc_now()
 
+    def _get_or_create_stepper(self) -> A4988Stepper:
+        if self._stepper is None or getattr(self._stepper, "_cleaned_up", False):
+            self._stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
+        return self._stepper
+
+    def _move_stepper(self, steps: int, *, forward: bool) -> None:
+        with self._motion_lock:
+            stepper = self._get_or_create_stepper()
+            stepper.move(steps, forward=forward)
+
     def _run_job(self, job: WriterJob):
         pn532 = None
-        stepper = None
         last_written_uid: bytes | None = None
         written_uids: set[bytes] = set()
         last_skip_log_time = 0.0
@@ -509,7 +528,6 @@ class NFCWriterController:
                 self._last_message = f"job {job.job_id} started"
 
             pn532 = init_pn532()
-            stepper = A4988Stepper(STEP_PIN, DIR_PIN, ENABLE_PIN)
 
             for index, result in enumerate(job.results):
                 with self._lock:
@@ -585,7 +603,7 @@ class NFCWriterController:
                             self._last_message = f"completed tag {result.index} of {len(job.results)}"
 
                         if index < len(job.results) - 1:
-                            stepper.move(self.step_count_per_tag, forward=True)
+                            self._move_stepper(self.step_count_per_tag, forward=True)
                         break
 
                     with self._lock:
@@ -615,9 +633,6 @@ class NFCWriterController:
                 self._last_error = str(exc)
                 self._last_message = f"job {job.job_id} failed"
                 self._updated_at = _utc_now()
-        finally:
-            if stepper is not None:
-                stepper.cleanup()
 
     @staticmethod
     def _serialize_job(job: WriterJob) -> dict[str, Any]:
