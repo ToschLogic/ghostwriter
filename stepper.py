@@ -14,14 +14,14 @@ class A4988Stepper:
         dir_pin,
         enable_pin=None,
         pulse_us=1000,
-        gap_us=1000,
+        gap_us=1500,
         *,
         auto_disable=True,
         cleanup_release_enable=False,
         enable_delay_s=0.002,
         dir_setup_s=0.001,
-        start_gap_us=5000,
-        ramp_steps=50,
+        start_gap_us=8000,
+        ramp_steps=120,
         settle_after_move_s=0.05,
     ):
         self.step_pin = step_pin
