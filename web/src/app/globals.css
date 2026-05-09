@@ -319,6 +319,170 @@ input:focus {
   border: 1px solid rgba(248, 113, 113, 0.2);
 }
 
+.alert.success {
+  background: rgba(34, 197, 94, 0.12);
+  color: #bbf7d0;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.tagBuilderPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.segmentedControl {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.segmentButton {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  padding: 10px 16px;
+  background: rgba(15, 23, 42, 0.5);
+  color: var(--foreground);
+  cursor: pointer;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+
+.segmentButton:hover {
+  transform: translateY(-1px);
+}
+
+.segmentButton.active {
+  background: rgba(34, 211, 238, 0.16);
+  border-color: rgba(34, 211, 238, 0.35);
+  color: var(--accent);
+}
+
+.mergeModeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.mergeModeRow label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--foreground);
+}
+
+.mergeModeRow input {
+  width: auto;
+}
+
+.builderCard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.46);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.builderCardHeader h3 {
+  margin-bottom: 8px;
+  font-size: 1rem;
+}
+
+.builderCardHeader p,
+.fileInputField span,
+.wizardGrid span,
+.previewHeader span,
+.tagSummaryRow span,
+.helperTextBlock p,
+.emptyPreview {
+  color: var(--muted);
+}
+
+.fileInputField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fileInputField input[type="file"] {
+  padding: 12px;
+}
+
+.helperTextBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.helperTextBlock code {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(7, 17, 31, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  color: #dbeafe;
+  overflow-x: auto;
+}
+
+.wizardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.wizardGrid label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wizardGrid label:first-child {
+  grid-column: 1 / -1;
+}
+
+.previewPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(7, 17, 31, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.previewHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.previewPanel ul {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 18px;
+}
+
+.previewPanel li {
+  word-break: break-word;
+}
+
+.tagSummaryRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.46);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
 .tableWrap {
   overflow-x: auto;
 }
@@ -601,6 +765,10 @@ th {
   .settingsForm,
   .settingsMeta {
     align-items: stretch;
+  }
+
+  .wizardGrid {
+    grid-template-columns: 1fr;
   }
 
   .nudgeControlGrid {

@@ -70,6 +70,68 @@ http://localhost:8000
 
 The operator dashboard lives in `web/`.
 
+### Tag job creation modes
+
+The dashboard now supports three ways to prepare a tag job:
+
+- **Manual entry** — add or remove individual URL rows
+- **Import JSON / CSV** — bulk load tag URLs from a file
+- **Testing tag creator wizard** — generate tag URLs from a count and incrementing integer pattern
+
+#### Supported JSON import formats
+
+```json
+["https://example.com/1", "https://example.com/2"]
+```
+
+```json
+[{ "url": "https://example.com/1" }, { "url": "https://example.com/2" }]
+```
+
+```json
+{
+  "tags": [
+    { "url": "https://example.com/1" },
+    { "url": "https://example.com/2" }
+  ]
+}
+```
+
+#### Supported CSV import format
+
+Header row is optional. Only the first column is used.
+
+```csv
+url
+https://example.com/1
+https://example.com/2
+```
+
+#### Testing tag creator wizard
+
+Use a URL pattern containing a `{n}` placeholder, for example:
+
+```text
+https://example.com/tag-{n}
+```
+
+The wizard lets operators choose:
+
+- start number
+- tag count
+- increment
+- optional zero-padding width
+
+Example with start `1`, count `3`, and pad width `3`:
+
+```text
+https://example.com/tag-001
+https://example.com/tag-002
+https://example.com/tag-003
+```
+
+Import and wizard flows can either **replace** the current tag list or **append** to it.
+
 ### Install dependencies
 
 ```bash
@@ -219,6 +281,13 @@ The following checks were run successfully:
 ```bash
 python -m py_compile nfc_controller.py api_server.py stepper.py
 cd web && npm run build
+```
+
+Additional frontend utility coverage is available via:
+
+```bash
+cd web
+npm test
 ```
 
 ## Notes

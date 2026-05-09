@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   cancelJob,
@@ -16,8 +16,23 @@ import {
   TagResult,
   updateSettings,
 } from "@/lib/api";
+import {
+  generatePatternTags,
+  mergeTags,
+  normalizeTagUrls,
+  parseImportedTags,
+  TagMergeMode,
+  validateTagUrls,
+} from "@/lib/tag-utils";
 
 const EMPTY_TAGS = ["https://", "https://"];
+const TAG_EDIT_MODES = [
+  { key: "manual", label: "Manual" },
+  { key: "import", label: "Import JSON / CSV" },
+  { key: "wizard", label: "Tag creator wizard" },
+] as const;
+
+type TagEditMode = (typeof TAG_EDIT_MODES)[number]["key"];
 
 function prettyState(state: string) {
   return state.replace(/-/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
@@ -59,6 +74,8 @@ export function Dashboard() {
   const [status, setStatus] = useState<MachineStatus | null>(null);
   const [settings, setSettings] = useState<MachineSettings | null>(null);
   const [tags, setTags] = useState<string[]>(EMPTY_TAGS);
+  const [tagEditMode, setTagEditMode] = useState<TagEditMode>("manual");
+  const [tagMergeMode, setTagMergeMode] = useState<TagMergeMode>("replace");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [stepCountInput, setStepCountInput] = useState("64");
@@ -68,7 +85,14 @@ export function Dashboard() {
   const [nudgeError, setNudgeError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [formNotice, setFormNotice] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [wizardPattern, setWizardPattern] = useState("https://example.com/tag-{n}");
+  const [wizardStart, setWizardStart] = useState("1");
+  const [wizardCount, setWizardCount] = useState("10");
+  const [wizardStep, setWizardStep] = useState("1");
+  const [wizardPadWidth, setWizardPadWidth] = useState("0");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Unused priming handlers kept for reference when feature is re-enabled
   const _startPriming = startPriming;
@@ -116,16 +140,119 @@ export function Dashboard() {
     return Math.round((status.completedTags / status.totalTags) * 100);
   }, [status]);
 
+  const normalizedTags = useMemo(() => normalizeTagUrls(tags), [tags]);
+
+  const wizardPreview = useMemo(() => {
+    const start = Number(wizardStart);
+    const count = Number(wizardCount);
+    const step = Number(wizardStep);
+    const padWidth = Number(wizardPadWidth);
+
+    if (
+      !Number.isInteger(start) ||
+      !Number.isInteger(count) ||
+      count < 1 ||
+      !Number.isInteger(step) ||
+      step < 1 ||
+      !Number.isInteger(padWidth) ||
+      padWidth < 0 ||
+      !wizardPattern.includes("{n}")
+    ) {
+      return [];
+    }
+
+    try {
+      return generatePatternTags({
+        pattern: wizardPattern,
+        start,
+        count: Math.min(count, 5),
+        step,
+        padWidth,
+      });
+    } catch {
+      return [];
+    }
+  }, [wizardCount, wizardPadWidth, wizardPattern, wizardStart, wizardStep]);
+
   const addTagRow = () => {
+    setFormError(null);
+    setFormNotice(null);
     setTags((current) => [...current, "https://"]);
   };
 
   const removeTagRow = (index: number) => {
+    setFormError(null);
+    setFormNotice(null);
     setTags((current) => (current.length === 1 ? current : current.filter((_, currentIndex) => currentIndex !== index)));
   };
 
   const updateTag = (index: number, value: string) => {
+    setFormError(null);
+    setFormNotice(null);
     setTags((current) => current.map((tag, currentIndex) => (currentIndex === index ? value : tag)));
+  };
+
+  const applyIncomingTags = (incoming: string[], mode: TagMergeMode) => {
+    setTags((current) => {
+      const nextExisting = mode === "append" ? normalizeTagUrls(current) : current;
+      const merged = mergeTags(nextExisting, incoming, mode);
+      return merged.length > 0 ? merged : EMPTY_TAGS;
+    });
+  };
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setFormError(null);
+    setFormNotice(null);
+
+    try {
+      const content = await file.text();
+      const { urls, invalidEntries, format } = parseImportedTags(content, file.name);
+
+      if (urls.length === 0) {
+        setFormError(`No valid URLs were found in the ${format.toUpperCase()} file.`);
+        return;
+      }
+
+      applyIncomingTags(urls, tagMergeMode);
+
+      const skippedCount = invalidEntries.length;
+      setFormNotice(
+        skippedCount > 0
+          ? `Imported ${urls.length} tags from ${file.name} and skipped ${skippedCount} invalid entr${skippedCount === 1 ? "y" : "ies"}.`
+          : `Imported ${urls.length} tags from ${file.name}.`,
+      );
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Failed to import file");
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const handleGenerateTags = () => {
+    setFormError(null);
+    setFormNotice(null);
+
+    try {
+      const urls = generatePatternTags({
+        pattern: wizardPattern,
+        start: Number(wizardStart),
+        count: Number(wizardCount),
+        step: Number(wizardStep),
+        padWidth: Number(wizardPadWidth),
+      });
+
+      applyIncomingTags(urls, tagMergeMode);
+      setFormNotice(`Generated ${urls.length} test tag URL${urls.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Failed to generate tags");
+    }
   };
 
   const handleNudge = async (steps: number, direction: NudgeDirection) => {
@@ -181,31 +308,23 @@ export function Dashboard() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError(null);
+    setFormNotice(null);
     setApiError(null);
 
-    const cleaned = tags.map((tag) => tag.trim()).filter(Boolean);
-    if (cleaned.length === 0) {
+    const { validUrls, invalidUrls } = validateTagUrls(tags);
+    if (validUrls.length === 0) {
       setFormError("Add at least one tag URL before starting a job.");
       return;
     }
 
-    const invalid = cleaned.find((tag) => {
-      try {
-        new URL(tag);
-        return false;
-      } catch {
-        return true;
-      }
-    });
-
-    if (invalid) {
-      setFormError(`Invalid URL: ${invalid}`);
+    if (invalidUrls.length > 0) {
+      setFormError(`Invalid URL: ${invalidUrls[0]}`);
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await createJob(cleaned);
+      await createJob(validUrls);
       const nextStatus = await getMachineStatus();
       setStatus(nextStatus);
     } catch (error) {
@@ -402,37 +521,177 @@ export function Dashboard() {
           </div>
 
           <form onSubmit={handleSubmit} className="tagForm">
-            <div className="tagList">
-              {tags.map((tag, index) => (
-                <div key={index} className="tagRow">
-                  <label>
-                    <span>Tag {index + 1}</span>
+            <div className="tagBuilderPanel">
+              <div className="segmentedControl" role="tablist" aria-label="Tag creation modes">
+                {TAG_EDIT_MODES.map((mode) => (
+                  <button
+                    key={mode.key}
+                    type="button"
+                    className={`segmentButton ${tagEditMode === mode.key ? "active" : ""}`}
+                    onClick={() => {
+                      setTagEditMode(mode.key);
+                      setFormError(null);
+                      setFormNotice(null);
+                    }}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mergeModeRow">
+                <span>When adding tags:</span>
+                <label>
+                  <input
+                    type="radio"
+                    name="tag-merge-mode"
+                    checked={tagMergeMode === "replace"}
+                    onChange={() => setTagMergeMode("replace")}
+                  />
+                  Replace current list
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="tag-merge-mode"
+                    checked={tagMergeMode === "append"}
+                    onChange={() => setTagMergeMode("append")}
+                  />
+                  Append to current list
+                </label>
+              </div>
+
+              {tagEditMode === "manual" ? (
+                <div className="tagList">
+                  {tags.map((tag, index) => (
+                    <div key={index} className="tagRow">
+                      <label>
+                        <span>Tag {index + 1}</span>
+                        <input
+                          type="url"
+                          value={tag}
+                          onChange={(event) => updateTag(index, event.target.value)}
+                          placeholder="https://example.com/my-tag"
+                        />
+                      </label>
+
+                      <button
+                        type="button"
+                        className="secondaryButton"
+                        onClick={() => removeTagRow(index)}
+                        disabled={tags.length === 1}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+
+                  <div className="buttonRow">
+                    <button type="button" className="secondaryButton" onClick={addTagRow}>
+                      Add tag row
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {tagEditMode === "import" ? (
+                <div className="builderCard">
+                  <div className="builderCardHeader">
+                    <h3>Import tag URLs</h3>
+                    <p>Upload a JSON or CSV file and merge the results into the current job list.</p>
+                  </div>
+
+                  <label className="fileInputField">
+                    <span>JSON / CSV file</span>
                     <input
-                      type="url"
-                      value={tag}
-                      onChange={(event) => updateTag(index, event.target.value)}
-                      placeholder="https://example.com/my-tag"
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".json,.csv,application/json,text/csv"
+                      onChange={handleImportFile}
                     />
                   </label>
 
-                  <button
-                    type="button"
-                    className="secondaryButton"
-                    onClick={() => removeTagRow(index)}
-                    disabled={tags.length === 1}
-                  >
-                    Remove
-                  </button>
+                  <div className="helperTextBlock">
+                    <p>Supported JSON:</p>
+                    <code>{'["https://example.com/1"]'}</code>
+                    <code>[{`{ "url": "https://example.com/1" }`}]</code>
+                    <code>{`{ "tags": [{ "url": "https://example.com/1" }] }`}</code>
+                    <p>Supported CSV:</p>
+                    <code>url</code>
+                    <code>https://example.com/1</code>
+                  </div>
                 </div>
-              ))}
+              ) : null}
+
+              {tagEditMode === "wizard" ? (
+                <div className="builderCard">
+                  <div className="builderCardHeader">
+                    <h3>Testing tag creator wizard</h3>
+                    <p>Generate a run of URLs from a tag count and incrementing integer pattern.</p>
+                  </div>
+
+                  <div className="wizardGrid">
+                    <label>
+                      <span>URL pattern</span>
+                      <input
+                        type="text"
+                        value={wizardPattern}
+                        onChange={(event) => setWizardPattern(event.target.value)}
+                        placeholder="https://example.com/tag-{n}"
+                      />
+                    </label>
+                    <label>
+                      <span>Start number</span>
+                      <input type="number" value={wizardStart} onChange={(event) => setWizardStart(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Tag count</span>
+                      <input type="number" min={1} value={wizardCount} onChange={(event) => setWizardCount(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Increment</span>
+                      <input type="number" min={1} value={wizardStep} onChange={(event) => setWizardStep(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Zero-padding width</span>
+                      <input type="number" min={0} value={wizardPadWidth} onChange={(event) => setWizardPadWidth(event.target.value)} />
+                    </label>
+                  </div>
+
+                  <div className="previewPanel">
+                    <div className="previewHeader">
+                      <strong>Preview</strong>
+                      <span>Showing up to 5 URLs</span>
+                    </div>
+                    {wizardPreview.length > 0 ? (
+                      <ul>
+                        {wizardPreview.map((url) => (
+                          <li key={url}>{url}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="emptyPreview">Enter a valid pattern with a <code>{"{n}"}</code> placeholder to preview generated tags.</p>
+                    )}
+                  </div>
+
+                  <div className="buttonRow">
+                    <button type="button" className="secondaryButton" onClick={handleGenerateTags}>
+                      Generate tags
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {formError ? <div className="alert error">{formError}</div> : null}
+            {formNotice ? <div className="alert success">{formNotice}</div> : null}
+
+            <div className="tagSummaryRow">
+              <span>Prepared tags</span>
+              <strong>{normalizedTags.length}</strong>
+            </div>
 
             <div className="buttonRow">
-              <button type="button" className="secondaryButton" onClick={addTagRow}>
-                Add tag row
-              </button>
               <button
                 type="submit"
                 className="primaryButton"

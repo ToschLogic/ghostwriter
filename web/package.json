@@ -6,7 +6,8 @@
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "rm -rf .test-dist && tsc --target ES2020 --module NodeNext --moduleResolution NodeNext --esModuleInterop --strict --skipLibCheck --outDir .test-dist src/lib/tag-utils.ts src/lib/tag-utils.test.ts && node --test .test-dist/tag-utils.test.js"
   },
   "dependencies": {
     "next": "16.2.4",
