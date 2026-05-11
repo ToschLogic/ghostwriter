@@ -26,6 +26,10 @@ class JobCreatePayload(BaseModel):
     tags: list[TagPayload] = Field(min_length=1)
 
 
+class BackendJobStartPayload(BaseModel):
+    jobId: str = Field(min_length=1)
+
+
 class NudgePayload(BaseModel):
     steps: int
     direction: str
@@ -142,6 +146,32 @@ def create_job(payload: JobCreatePayload):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         logger.error(f"ValueError creating job: {exc}")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"jobId": job.job_id, "state": job.state, "job": controller.get_current_job_data()}
+
+
+@app.get("/api/backend/jobs")
+def list_backend_jobs():
+    logger.info("GET /api/backend/jobs - Fetching backend jobs")
+    try:
+        jobs = controller.refresh_backend_jobs()
+    except RuntimeError as exc:
+        logger.error(f"RuntimeError fetching backend jobs: {exc}")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"jobs": jobs, "backend": controller.get_backend_status()}
+
+
+@app.post("/api/backend/jobs/start")
+def start_backend_job(payload: BackendJobStartPayload):
+    logger.info(f"POST /api/backend/jobs/start - Starting backend job {payload.jobId}")
+    try:
+        job = controller.start_backend_job(payload.jobId)
+    except RuntimeError as exc:
+        logger.error(f"RuntimeError starting backend job: {exc}")
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        logger.error(f"ValueError starting backend job: {exc}")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {"jobId": job.job_id, "state": job.state, "job": controller.get_current_job_data()}

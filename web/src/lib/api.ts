@@ -16,8 +16,33 @@ export type TagResult = {
   completed_at: string | null;
 };
 
+export type BackendStatus = {
+  enabled: boolean;
+  writerKey: string;
+  realtimeStatus: string;
+  availableJobCount: number;
+  lastError: string | null;
+};
+
+export type BackendJob = {
+  id: string;
+  writerKey: string;
+  status: string;
+  createdAt: string | null;
+  requestedAt: string | null;
+  tagCount: number;
+  lotName: string | null;
+  jobType: string | null;
+  jobOptions: Record<string, unknown>;
+};
+
 export type CurrentJob = {
   jobId: string;
+  source: "local" | "supabase";
+  remoteJobId: string | null;
+  writerKey: string | null;
+  lotName: string | null;
+  jobType: string | null;
   state: MachineState;
   createdAt: string;
   startedAt: string | null;
@@ -31,6 +56,7 @@ export type CurrentJob = {
 export type MachineStatus = {
   state: MachineState;
   jobId: string | null;
+  jobSource: "local" | "supabase" | null;
   totalTags: number;
   completedTags: number;
   currentTagNumber: number | null;
@@ -39,6 +65,7 @@ export type MachineStatus = {
   lastError: string | null;
   updatedAt: string;
   job: CurrentJob | null;
+  backend: BackendStatus;
   primingTagPresent: boolean;
   primingUid: string | null;
 };
@@ -102,5 +129,16 @@ export function createJob(urls: string[]) {
     body: JSON.stringify({
       tags: urls.map((url) => ({ url })),
     }),
+  });
+}
+
+export function getBackendJobs() {
+  return apiFetch<{ jobs: BackendJob[]; backend: BackendStatus }>("/api/backend/jobs");
+}
+
+export function startBackendJob(jobId: string) {
+  return apiFetch<{ jobId: string; state: MachineState; job: CurrentJob }>("/api/backend/jobs/start", {
+    method: "POST",
+    body: JSON.stringify({ jobId }),
   });
 }

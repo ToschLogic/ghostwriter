@@ -10,6 +10,7 @@ import busio
 from adafruit_pn532.spi import PN532_SPI
 from digitalio import DigitalInOut
 
+from supabase_jobs import SupabaseJobManager, extract_launch_urls
 from stepper import A4988Stepper
 
 STEP_PIN = 18
@@ -313,6 +314,11 @@ class TagWriteResult:
 class WriterJob:
     tags: list[TagWriteRequest]
     job_id: str = field(default_factory=lambda: str(uuid4()))
+    source: str = "local"
+    remote_job_id: str | None = None
+    writer_key: str | None = None
+    lot_name: str | None = None
+    remote_job_type: str | None = None
     state: str = "queued"
     created_at: str = field(default_factory=_utc_now)
     started_at: str | None = None
@@ -346,6 +352,7 @@ class NFCWriterController:
         self._job_thread: threading.Thread | None = None
         self._current_job: WriterJob | None = None
         self._stepper: A4988Stepper | None = None
+        self._supabase = SupabaseJobManager()
         self._last_message = "idle"
         self._last_error: str | None = None
         self._last_uid: str | None = None
@@ -396,11 +403,46 @@ class NFCWriterController:
         if not tags:
             raise ValueError("at least one tag is required")
 
+        job = WriterJob(tags=tags)
+        return self._start_job(job)
+
+    def list_backend_jobs(self) -> list[dict[str, Any]]:
+        return self._supabase.list_jobs()
+
+    def refresh_backend_jobs(self) -> list[dict[str, Any]]:
+        return self._supabase.refresh_jobs()
+
+    def start_backend_job(self, remote_job_id: str) -> WriterJob:
+        remote_job = self._supabase.get_job(remote_job_id)
+        if remote_job is None:
+            raise ValueError("backend job not found for this writer")
+
+        urls = extract_launch_urls(remote_job.request_payload)
+        if not urls:
+            raise ValueError("backend job does not contain any tag launchUrl values")
+
+        job = WriterJob(
+            tags=[TagWriteRequest(url=url) for url in urls],
+            job_id=remote_job.id,
+            source="supabase",
+            remote_job_id=remote_job.id,
+            writer_key=remote_job.writer_key,
+            lot_name=remote_job.lot_name,
+            remote_job_type=remote_job.request_payload.get("jobType"),
+        )
+        return self._start_job(job)
+
+    def get_backend_status(self) -> dict[str, Any]:
+        return self._supabase.get_status()
+
+    def _start_job(self, job: WriterJob) -> WriterJob:
+        if not job.tags:
+            raise ValueError("at least one tag is required")
+
         with self._lock:
             if self._job_thread is not None and self._job_thread.is_alive():
                 raise RuntimeError("writer is already running a job")
 
-            job = WriterJob(tags=tags)
             self._current_job = job
             self._last_error = None
             self._cancel_requested = False
@@ -440,6 +482,7 @@ class NFCWriterController:
             return {
                 "state": state,
                 "jobId": job.job_id if job else None,
+                "jobSource": job.source if job else None,
                 "totalTags": total_tags,
                 "completedTags": completed_tags,
                 "currentTagNumber": current_tag_number,
@@ -448,6 +491,7 @@ class NFCWriterController:
                 "lastError": self._last_error,
                 "updatedAt": self._updated_at,
                 "job": self.get_current_job_data(),
+                "backend": self._supabase.get_status(),
                 "primingTagPresent": self._priming_tag_present,
                 "primingUid": self._priming_uid,
             }
@@ -522,6 +566,8 @@ class NFCWriterController:
 
         try:
             with self._lock:
+                if job.source == "supabase" and job.remote_job_id:
+                    self._supabase.mark_processing(job.remote_job_id)
                 job.state = "running"
                 job.started_at = _utc_now()
                 self._updated_at = _utc_now()
@@ -534,6 +580,8 @@ class NFCWriterController:
                     if self._cancel_requested:
                         job.state = "cancelled"
                         job.completed_at = _utc_now()
+                        if job.source == "supabase" and job.remote_job_id:
+                            self._supabase.mark_failed(job.remote_job_id, "Job cancelled by operator")
                         self._last_message = f"job {job.job_id} cancelled"
                         self._updated_at = _utc_now()
                         return
@@ -550,6 +598,8 @@ class NFCWriterController:
                             job.state = "cancelled"
                             job.completed_at = _utc_now()
                             result.status = "cancelled"
+                            if job.source == "supabase" and job.remote_job_id:
+                                self._supabase.mark_failed(job.remote_job_id, "Job cancelled by operator")
                             self._last_message = f"job {job.job_id} cancelled"
                             self._updated_at = _utc_now()
                             return
@@ -612,6 +662,8 @@ class NFCWriterController:
                         result.completed_at = _utc_now()
                         job.state = "error"
                         job.error = f"failed writing tag {result.index}"
+                        if job.source == "supabase" and job.remote_job_id:
+                            self._supabase.mark_failed(job.remote_job_id, job.error)
                         self._last_error = job.error
                         self._last_message = job.error
                         self._updated_at = _utc_now()
@@ -622,6 +674,9 @@ class NFCWriterController:
             with self._lock:
                 job.state = "completed"
                 job.completed_at = _utc_now()
+                if job.source == "supabase" and job.remote_job_id:
+                    written_count = sum(1 for result in job.results if result.status == "written")
+                    self._supabase.mark_completed(job.remote_job_id, written_count=written_count)
                 self._last_message = f"job {job.job_id} completed"
                 self._updated_at = _utc_now()
 
@@ -630,6 +685,8 @@ class NFCWriterController:
                 job.state = "error"
                 job.error = str(exc)
                 job.completed_at = _utc_now()
+                if job.source == "supabase" and job.remote_job_id:
+                    self._supabase.mark_failed(job.remote_job_id, str(exc))
                 self._last_error = str(exc)
                 self._last_message = f"job {job.job_id} failed"
                 self._updated_at = _utc_now()
@@ -638,6 +695,11 @@ class NFCWriterController:
     def _serialize_job(job: WriterJob) -> dict[str, Any]:
         return {
             "jobId": job.job_id,
+            "source": job.source,
+            "remoteJobId": job.remote_job_id,
+            "writerKey": job.writer_key,
+            "lotName": job.lot_name,
+            "jobType": job.remote_job_type,
             "state": job.state,
             "createdAt": job.created_at,
             "startedAt": job.started_at,

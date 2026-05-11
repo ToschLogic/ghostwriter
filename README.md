@@ -4,6 +4,7 @@ Ghostwriter now includes:
 
 - a **Python NFC machine controller + API** for submitting tag write jobs and reading live machine status
 - an in-repo **Next.js operator dashboard** for building tag batches and starting jobs from the browser
+- a **Supabase-backed backend job integration** for choosing remote `writer_jobs` and writing status updates back to the database
 
 ## Repo layout
 
@@ -26,10 +27,15 @@ The Python side keeps ownership of the hardware logic and exposes HTTP endpoints
   - current machine state
   - active/recent job progress
   - last UID, last message, last error
+  - backend writer integration status and realtime connection state
 - `GET /api/jobs/current`
   - current job details and per-tag results
 - `POST /api/jobs`
   - submit a new tag write job
+- `GET /api/backend/jobs`
+  - list unfinished Supabase `writer_jobs` for the configured writer key
+- `POST /api/backend/jobs/start`
+  - manually start a selected Supabase backend job on the local machine
 
 Example payload:
 
@@ -60,6 +66,24 @@ pip install -r requirements.txt
 uvicorn api_server:app --host 0.0.0.0 --port 8000
 ```
 
+### 2a) Configure Supabase backend jobs
+
+Create a repo-root `.env` file for the Python API / Pi worker:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://vxelgqdynmkvedmdwvxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+NFC_WRITER_KEY=default
+```
+
+Notes:
+
+- the Python controller reads the root `.env` automatically on startup
+- `NFC_WRITER_KEY` defaults to `default` if omitted
+- the Pi fetches unfinished backend jobs for that writer key and listens for Realtime `writer:jobs:{writerKey}` broadcasts
+- backend jobs are **manual start** in the dashboard; they do not auto-run when received
+
 This starts the local API at:
 
 ```text
@@ -77,6 +101,20 @@ The dashboard now supports three ways to prepare a tag job:
 - **Manual entry** — add or remove individual URL rows
 - **Import JSON / CSV** — bulk load tag URLs from a file
 - **Testing tag creator wizard** — generate tag URLs from a count and incrementing integer pattern
+- **Backend writer jobs** — choose an unfinished Supabase `writer_jobs` record for the current writer and start it manually
+
+### Supabase backend job flow
+
+When a backend job is started from the dashboard:
+
+1. The local API fetches the selected `writer_jobs` row for the configured `NFC_WRITER_KEY`.
+2. It extracts `request_payload.tags[].launchUrl` and reuses the existing NFC write loop.
+3. The row is updated back to Supabase as:
+   - `processing` when the machine begins the job
+   - `completed` with `result_payload.writtenCount` when all tags are written
+   - `failed` with `error_message` if the write fails or the operator cancels the job
+
+On startup, the Pi also queries unfinished backend jobs (`queued`, `sent`, `processing`) before relying on live Realtime events.
 
 #### Supported JSON import formats
 

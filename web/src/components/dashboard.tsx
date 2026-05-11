@@ -3,14 +3,17 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  BackendJob,
   cancelJob,
   createJob,
+  getBackendJobs,
   getSettings,
   getMachineStatus,
   MachineSettings,
   MachineStatus,
   NudgeDirection,
   nudgeStepper,
+  startBackendJob,
   startPriming,
   stopPriming,
   TagResult,
@@ -87,6 +90,10 @@ export function Dashboard() {
   const [formError, setFormError] = useState<string | null>(null);
   const [formNotice, setFormNotice] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [backendJobs, setBackendJobs] = useState<BackendJob[]>([]);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [selectedBackendJobId, setSelectedBackendJobId] = useState<string | null>(null);
+  const [isStartingBackendJob, setIsStartingBackendJob] = useState(false);
   const [wizardPattern, setWizardPattern] = useState("https://example.com/tag-{n}");
   const [wizardStart, setWizardStart] = useState("1");
   const [wizardCount, setWizardCount] = useState("10");
@@ -105,22 +112,35 @@ export function Dashboard() {
 
     const loadStatus = async () => {
       try {
-        const [nextStatus, nextSettings] = await Promise.all([getMachineStatus(), getSettings()]);
+        const [nextStatus, nextSettings, nextBackendJobs] = await Promise.all([
+          getMachineStatus(),
+          getSettings(),
+          getBackendJobs(),
+        ]);
         if (!active) {
           return;
         }
         setStatus(nextStatus);
         setSettings(nextSettings);
+        setBackendJobs(nextBackendJobs.jobs);
+        setSelectedBackendJobId((current) => {
+          if (current && nextBackendJobs.jobs.some((job) => job.id === current)) {
+            return current;
+          }
+          return nextBackendJobs.jobs[0]?.id ?? null;
+        });
         if (!isEditingStepCount) {
           setStepCountInput(String(nextSettings.stepCountPerTag));
         }
         setApiError(null);
         setSettingsError(null);
+        setBackendError(null);
       } catch (error) {
         if (!active) {
           return;
         }
         setApiError(error instanceof Error ? error.message : "Failed to load machine status");
+        setBackendError(error instanceof Error ? error.message : "Failed to load backend jobs");
       }
     };
 
@@ -302,6 +322,33 @@ export function Dashboard() {
       setSettingsError(error instanceof Error ? error.message : "Failed to save settings");
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  const handleStartBackendJob = async () => {
+    if (!selectedBackendJobId) {
+      setBackendError("Choose a backend job before starting it.");
+      return;
+    }
+
+    setIsStartingBackendJob(true);
+    setApiError(null);
+    setBackendError(null);
+    try {
+      await startBackendJob(selectedBackendJobId);
+      const [nextStatus, nextBackendJobs] = await Promise.all([getMachineStatus(), getBackendJobs()]);
+      setStatus(nextStatus);
+      setBackendJobs(nextBackendJobs.jobs);
+      setSelectedBackendJobId((current) => {
+        if (current && nextBackendJobs.jobs.some((job) => job.id === current)) {
+          return current;
+        }
+        return nextBackendJobs.jobs[0]?.id ?? null;
+      });
+    } catch (error) {
+      setBackendError(error instanceof Error ? error.message : "Failed to start backend job");
+    } finally {
+      setIsStartingBackendJob(false);
     }
   };
 
@@ -491,12 +538,24 @@ export function Dashboard() {
               <dd>{status?.jobId ?? "—"}</dd>
             </div>
             <div>
+              <dt>Job source</dt>
+              <dd>{status?.jobSource ? prettyState(status.jobSource) : "—"}</dd>
+            </div>
+            <div>
               <dt>Last message</dt>
               <dd>{status?.lastMessage ?? "Waiting for first status response"}</dd>
             </div>
             <div>
               <dt>Last error</dt>
               <dd>{status?.lastError ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Backend writer</dt>
+              <dd>{status?.backend?.writerKey ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Realtime status</dt>
+              <dd>{status?.backend?.realtimeStatus ? prettyState(status.backend.realtimeStatus) : "—"}</dd>
             </div>
           </dl>
 
@@ -704,11 +763,90 @@ export function Dashboard() {
         </article>
       </section>
 
+      <section className="panel backendJobsPanel">
+        <div className="panelHeader">
+          <h2>Backend writer jobs</h2>
+          <p>Choose a Supabase job for this writer and start it manually from the Pi.</p>
+        </div>
+
+        {backendError ? <div className="alert error">{backendError}</div> : null}
+
+        <div className="backendMetaRow">
+          <span>
+            Backend integration: {status?.backend?.enabled ? "enabled" : "disabled"}
+          </span>
+          <span>Writer key: {status?.backend?.writerKey ?? "default"}</span>
+          <span>Available jobs: {backendJobs.length}</span>
+        </div>
+
+        {backendJobs.length > 0 ? (
+          <div className="backendJobList" role="list">
+            {backendJobs.map((job) => {
+              const isSelected = selectedBackendJobId === job.id;
+              return (
+                <button
+                  key={job.id}
+                  type="button"
+                  className={`backendJobCard ${isSelected ? "selected" : ""}`}
+                  onClick={() => setSelectedBackendJobId(job.id)}
+                >
+                  <div className="backendJobCardHeader">
+                    <strong>{job.lotName ?? "Unnamed lot"}</strong>
+                    <span className={`pill ${statusTone(job.status)}`}>{prettyState(job.status)}</span>
+                  </div>
+                  <div className="backendJobCardMeta">
+                    <span>ID: {job.id}</span>
+                    <span>Type: {job.jobType ?? "write_lot"}</span>
+                    <span>Tags: {job.tagCount}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="emptyState">No unfinished Supabase jobs are currently available for this writer.</div>
+        )}
+
+        <div className="buttonRow">
+          <button
+            type="button"
+            className="secondaryButton"
+            onClick={async () => {
+              try {
+                const nextBackendJobs = await getBackendJobs();
+                setBackendJobs(nextBackendJobs.jobs);
+                setSelectedBackendJobId((current) => current ?? nextBackendJobs.jobs[0]?.id ?? null);
+                setBackendError(null);
+              } catch (error) {
+                setBackendError(error instanceof Error ? error.message : "Failed to refresh backend jobs");
+              }
+            }}
+          >
+            Refresh backend jobs
+          </button>
+          <button
+            type="button"
+            className="primaryButton"
+            onClick={handleStartBackendJob}
+            disabled={!selectedBackendJobId || isStartingBackendJob || isJobActive}
+          >
+            {isStartingBackendJob ? "Starting…" : "Start selected backend job"}
+          </button>
+        </div>
+      </section>
+
       <section className="panel resultsPanel">
         <div className="panelHeader">
           <h2>Current job details</h2>
           <p>Per-tag write progress from the active or most recent job.</p>
         </div>
+
+        {status?.job?.source === "supabase" ? (
+          <div className="jobSourceBanner">
+            <span>Supabase job</span>
+            <strong>{status.job.lotName ?? status.job.remoteJobId ?? status.job.jobId}</strong>
+          </div>
+        ) : null}
 
         {status?.job?.results?.length ? (
           <div className="tableWrap">
